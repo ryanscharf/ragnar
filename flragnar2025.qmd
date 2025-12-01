@@ -1,0 +1,16 @@
+---
+title: "FL RAGNAR 2025"
+format: html
+---
+
+```{r setup, include=FALSE}
+
+library(tmaptools)
+
+r <- read_GPX('FL Red Loop.gpx')
+y <- read_GPX('FL Yellow Loop.gpx')
+g <- read_GPX('FL Green Loop.gpx')
+
+
+
+```
