@@ -4,13 +4,158 @@ format: html
 ---
 
 ```{r setup, include=FALSE}
-
+library(tidyverse)
 library(tmaptools)
+library(sf)
+library(terra)
+library(tigris)
+library(elevatr)
+library(tidyterra)
+library(viridisLite)
+library(mapgl)
 
 r <- read_GPX('FL Red Loop.gpx')
 y <- read_GPX('FL Yellow Loop.gpx')
 g <- read_GPX('FL Green Loop.gpx')
 
+all_geoms <- c(st_geometry(r$tracks), st_geometry(y$tracks), st_geometry(g$tracks))
+bbox_combined <- st_bbox(all_geoms)
+bbox_ext <- ext(bbox_combined["xmin"], bbox_combined["xmax"], 
+                bbox_combined["ymin"], bbox_combined["ymax"])
 
+
+hcfl <- counties(state = "FL", cb = TRUE) %>%
+  filter(NAME == "Hillsborough")
+
+dem <- get_elev_raster(hcfl, z = 14, clip = "locations")
+dem_terra <- terra::rast(dem)
+
+# Crop the DEM
+dem_cropped <- crop(dem_terra, bbox_ext)
+
+# Plot the DEM
+ggplot() + 
+    geom_spatraster(data = dem_cropped) + scale_fill_viridis_c(option = 'C')+
+    geom_sf(data = r$track_points, aes(color = ele), color = 'red') + 
+    geom_sf(data = g$track_points, aes(color = ele), color = 'green') +
+    geom_sf(data = y$track_points, aes(color = ele), color = 'yellow')
+```
+
+
+```{r }
+ggplot() + 
+    geom_line(data = r$track_points, aes(y = ele, x = track_seg_point_id), color = 'red') +
+    geom_line(data = g$track_points, aes(y = ele, x = track_seg_point_id), color = 'green') +
+    geom_line(data = y$track_points, aes(y = ele, x = track_seg_point_id), color = 'yellow')
+```
+
+
+```{r}
+
+
+# Ensure the DEM is in WGS84 (EPSG:4326) for web mapping
+dem_wgs84 <- project(dem_cropped, "EPSG:4326")
+
+# Convert raster to a data frame for plotting
+dem_df <- as.data.frame(dem_wgs84, xy = TRUE)
+colnames(dem_df) <- c("lon", "lat", "elevation")
+
+# Remove NA values
+dem_df <- dem_df[!is.na(dem_df$elevation), ]
+
+# Create a color palette for elevation
+dem_df$color <- colorRampPalette(terrain.colors(100))(100)[
+  cut(dem_df$elevation, breaks = 100, labels = FALSE)
+]
+
+# Get center point for map
+center_lon <- mean(bbox_combined["xmin"], bbox_combined["xmax"])
+center_lat <- mean(bbox_combined["ymin"], bbox_combined["ymax"])
+
+# Add DEM points (note: for large rasters, consider downsampling)
+# Downsample if too many points
+if (nrow(dem_df) > 10000) {
+  dem_df <- dem_df[seq(1, nrow(dem_df), length.out = 10000), ]
+}
+
+# Add the GPX tracks
+# Convert to WGS84 if needed
+r_wgs84 <- st_transform(r$tracks, 4326)
+y_wgs84 <- st_transform(y$tracks, 4326)
+g_wgs84 <- st_transform(g$tracks, 4326)
+
+map <- mapboxgl(
+  center = c(center_lon, center_lat),
+  zoom = 12,
+  style = mapbox_style("outdoors")
+) %>%
+  add_image_source(
+    id = "dem-source",
+    data = dem_wgs84
+      ) %>%
+  add_raster_layer(
+    id = "dem",
+    source = "dem-source",
+    raster_opacity = 0.7
+  ) %>%
+  add_line_layer(
+    id = "red_loop",
+    source = r_wgs84,
+    line_color = "red",
+    line_width = 3
+  ) %>%
+  add_line_layer(
+    id = "yellow_loop",
+    source = y_wgs84,
+    line_color = "yellow",
+    line_width = 3
+  ) %>%
+  add_line_layer(
+    id = "green_loop",
+    source = g_wgs84,
+    line_color = "green",
+    line_width = 3
+  ) 
+
+# Display the map
+map
+```
+
+
+
+```{r}
+
+# Extract track points
+r_pts <- r$track_points %>% mutate(loop = "red")
+g_pts <- g$track_points %>% mutate(loop = "green")
+y_pts <- y$track_points %>% mutate(loop = "yellow")
+
+# Get the maximum length to align all to same end point
+max_length <- max(nrow(r_pts), nrow(g_pts), nrow(y_pts))
+
+# Reverse the track_seg_point_id so they all end at max_length
+r_pts$track_id_reversed <- max_length - (nrow(r_pts) - r_pts$track_seg_point_id)
+g_pts$track_id_reversed <- max_length - (nrow(g_pts) - g_pts$track_seg_point_id)
+y_pts$track_id_reversed <- max_length - (nrow(y_pts) - y_pts$track_seg_point_id)
+
+# Plot with reversed IDs (all ending at same point)
+ggplot() + 
+  geom_line(data = r_pts, aes(y = ele, x = track_id_reversed), 
+            color = 'red', linewidth = 1) +
+  geom_line(data = g_pts, aes(y = ele, x = track_id_reversed), 
+            color = 'green', linewidth = 1) +
+  geom_line(data = y_pts, aes(y = ele, x = track_id_reversed), 
+            color = 'yellow', linewidth = 1) +
+  labs(title = "Elevation Profiles - Aligned at Endpoint",
+       y = "Elevation (m)",
+       x = "Track Segment Point ID (reversed)") +
+  theme_minimal()
+
+# Print info
+cat("Track lengths:\n")
+cat("Red loop:", nrow(r_pts), "points\n")
+cat("Green loop:", nrow(g_pts), "points\n")
+cat("Yellow loop:", nrow(y_pts), "points\n")
+cat("\nAll tracks now end at point:", max_length, "\n")
 
 ```
